@@ -272,16 +272,17 @@ if __name__ == '__main__':
 
     for index, (input_tensor, label) in enumerate(dataloader.iterator()):
         index=index+initial_index
-        # torch.cuda.empty_cache()
-        # optimizer.zero_grad()
+        print("Iteration {}".format(index))
+        torch.cuda.empty_cache()
+        optimizer.zero_grad()
         #
-        # try:
+        try:
         #
-        #     input = input_tensor.to(device)
-        #     label = label.to(device)
+             input = input_tensor.to(device)
+             label = label.to(device)
         #
         #     # Forward
-        #     output = net(input)
+             output = net(input)
         #
         #
         #     # if index % 1 == 0:
@@ -319,18 +320,18 @@ if __name__ == '__main__':
         #
         #
         #     # Loss
-        #     loss = criterion(output.F, label)
-        #     print('Iteration: ', index, ', Loss: ', loss.item())
+             loss = criterion(output.F, label)
+             print('Iteration: ', index, ', Loss: ', loss.item())
         #
         #     # Gradient
-        #     loss.backward()
-        #     optimizer.step()
+             loss.backward()
+             optimizer.step()
         #
-        # except Exception as e:
-        #     print("Exception captured")
-        #     import traceback
-        #     traceback.print_exc(e)
-        #     pass
+        except Exception as e:
+             print("Exception captured")
+             import traceback
+             traceback.print_exc(e)
+             pass
 
         # Saving and loading a network
     # torch.save(net.state_dict(), 'test.pth')

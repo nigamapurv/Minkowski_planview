@@ -72,12 +72,13 @@ def get_point_cloud_reference_and_transformation(scan_data, key_priority=["point
     return None
 
 class Example:
-    def __init__(self, scans, transformations, floor_plan, label, capture_id):
+    def __init__(self, scans, transformations, floor_plan, label, capture_id, merged_pointCloud):
         self.scans = scans
         self.transformations = transformations
         self.floor_plan = floor_plan
         self.label = label
         self.capture_id = capture_id
+        self.merged_pointloud = merged_pointCloud
 
     def asset_iterator(self):
         for scan in self.scans:
@@ -95,7 +96,7 @@ class DataLoader:
         self.workflow_context = io.load_json_from_s3("darkroom-plan-view-datasets", f"executions/{self.execution_id}/workflow-context.json")
         self.response = self.parse_data()
         self.examples = self.make_examples()
-        self.savePointClouds()
+        # self.savePointClouds()
 
         # self.download_assets()
 
@@ -173,7 +174,11 @@ class DataLoader:
             label_filename = os.path.join(self.work_dir, label_path)
             label = Asset(label_bucket, label_path, label_filename)
 
-            example = Example(scans, transformations, floor_plan, label, capture_id)
+            scene_name = os.path.basename(label_filename).split('_')[1].split('.')[0]
+            merged_pointCloud = os.path.join(self.work_dir, capture_id, '{}.npy'.format(scene_name))
+
+
+            example = Example(scans, transformations, floor_plan, label, capture_id, merged_pointCloud)
             examples.append(example)
 
         return examples
@@ -183,33 +188,41 @@ class DataLoader:
             io.download_assets(example.asset_iterator)
 
     def savePointClouds(self):
-        points = []
-        intensities = []
-        normals = []
-        scan_origins = []
+
 
         for example in self.examples:
+            points = []
+            intensities = []
+            normals = []
+            scan_origins = []
+
             example: Example = example
             scene_name = os.path.basename(example.label.filename).split('_')[1].split('.')[0]
 
             if os.path.exists( os.path.join(self.work_dir, example.capture_id, '{}.npy'.format(scene_name)) ):
-                print("Merged Point CLoud Already exists, skiping ")
-                # continue
-            if(True):
+                print("Merged Point Cloud Already exists, skiping ")
+                continue
+            else:
                 if(not os.path.exists(os.path.join(self.work_dir, example.capture_id))):
                     os.mkdir(os.path.join(self.work_dir, example.capture_id))
 
-                floor_plan = io.load_svg_from_file(example.floor_plan.filename)
+                print("Merging Point Cloud for {}".format(os.path.join(self.work_dir, example.capture_id, '{}.npy'.format(scene_name)) ))
 
+                floor_plan = io.load_svg_from_file(example.floor_plan.filename)
+                #
                 view_box = [float(value) for value in floor_plan.getroot().attrib["viewBox"].split(" ")]
                 width = int(np.ceil(view_box[2]))
                 height = int(np.ceil(view_box[3]))
 
                 if width * height > 2000 * 1500:
+                    print("Skipping Florplan, to large ....{} {}".format(width,height))
                     continue
 
                 filenames = [scan.filename for scan in example.scans]
                 transformations = example.transformations
+
+                if len(filenames) == 0:
+                    continue
 
                 for filename, transformation in zip(filenames, transformations):
                     point_cloud = pupil_vision.read_point_cloud(filename)
@@ -236,6 +249,8 @@ class DataLoader:
                 print("Saving Merged Point Cloud {} ".format(os.path.join(self.work_dir,example.capture_id, '{}.npy'.format(scene_name))))
                 np.save(os.path.join(self.work_dir,example.capture_id, '{}.npy'.format(scene_name)), np_combined_ptCl)
 
+        print("Done cnversion of pointclouds to Numpy format")
+
     def iterator(self):
         voxel_size = 0.08
 
@@ -247,14 +262,14 @@ class DataLoader:
             label = exr_io.load_semantic_image(example.label.filename)
             floor_plan = io.load_svg_from_file(example.floor_plan.filename)
 
-            # canvas = np.zeros(label.shape[0:2], dtype=np.uint8)
-            # colour_map = create_generic_colormap(label.shape[2]).astype(np.uint8)
-            # for class_index in range(label.shape[2]):
-            #     channel = label[:, :, class_index]
-            #     channel[channel==class_index] = 255
-            #     # kernel = np.ones((35, 35), np.uint8)
-            #     # channel = cv2.dilate(np.asarray(channel, dtype='uint8'), kernel, iterations=1)
-            #     canvas[channel > 0] = class_index
+            canvas = np.zeros(label.shape[0:2], dtype=np.uint8)
+            colour_map = create_generic_colormap(label.shape[2]).astype(np.uint8)
+            for class_index in range(label.shape[2]):
+                channel = label[:, :, class_index]
+                channel[channel==class_index] = 255
+                # kernel = np.ones((35, 35), np.uint8)
+                # channel = cv2.dilate(np.asarray(channel, dtype='uint8'), kernel, iterations=1)
+                canvas[channel > 0] = class_index
 
             # plt.subplot(121)
             # plt.imshow(colour_map[canvas])
@@ -267,10 +282,10 @@ class DataLoader:
             transformations = example.transformations
             scene_name = os.path.basename(example.label.filename).split('_')[1].split('.')[0]
             # savePointClouds(filenames, transformations, scene_name, self.work_dir)
-            # if len(filenames) == 0:
-            #     continue
+            if len(filenames) == 0:
+                continue
             #
-            # input_tensor, ptCld_labels,  min_coords, max_coords = generate_input_sparse_tensor(filenames, transformations, voxel_size, projection_matrix, canvas,width, height)
+            input_tensor, ptCld_labels,  min_coords, max_coords = generate_input_sparse_tensor(filenames, transformations, voxel_size, projection_matrix, canvas,width, height, example.merged_pointloud)
             # diff_coords = max_coords - min_coords
             # dx = diff_coords[0] / voxel_size
             # dy = diff_coords[1] / voxel_size
@@ -286,7 +301,7 @@ class DataLoader:
             # xyz = np.matmul(uvw_label, inverse_projection_matrix.transpose())
             # uv_minkowski = np.expand_dims(2.0 * np.matmul(xyz, minkowski_projection_matrix.transpose())[:, :, 0:2] - 1.0, axis=0)
             # uv_minkowski = np.stack([uv_minkowski[..., 1], uv_minkowski[..., 0]] , axis=3)
-            # yield input_tensor, ptCld_labels
+            yield input_tensor, ptCld_labels
 
 def safe_div(x, y):
     return x / np.where(y > 0, y, np.ones_like(y))
@@ -377,39 +392,50 @@ def make_homogeneous(points):
     return np.concatenate([points, np.ones(shape = [num_points, 1], dtype = points.dtype)], axis = 1)
 
 
-def load_files(filenames, transformations, voxel_size, projection_matrix, canvas,width, height):
+def load_files(filenames, transformations, voxel_size, projection_matrix, canvas,width, height, merged_pointCloud):
     points = []
     intensities = []
     normals = []
     scan_origins = []
 
-    for filename, transformation in zip(filenames, transformations):
-        point_cloud = pupil_vision.read_point_cloud(filename)
-        point_cloud.estimate_normals()
-        point_cloud.orient_normals_towards_camera_location(camera_location=np.array([0.0, 0.0, 0.0]))
-        point_cloud.transform(transformation)
+    # for filename, transformation in zip(filenames, transformations):
+    #      point_cloud = pupil_vision.read_point_cloud(filename)
+    #      point_cloud.estimate_normals()
+    #      point_cloud.orient_normals_towards_camera_location(camera_location=np.array([0.0, 0.0, 0.0]))
+    #      point_cloud.transform(transformation)
+    #
+    #      points.append(np.asarray(point_cloud.points))
+    #      intensities.append(np.asarray(point_cloud.intensities))
+    #      normals.append(np.asarray(point_cloud.normals))
+    #
+    #      scan_origins.append(transformation[0:3, 3])
 
-        points.append(np.asarray(point_cloud.points))
-        intensities.append(np.asarray(point_cloud.intensities))
-        normals.append(np.asarray(point_cloud.normals))
+    for transformation in transformations:
 
-        scan_origins.append(transformation[0:3, 3])
-
-    point_cloud = open3d.geometry.PointCloud()
-    point_cloud.points = open3d.utility.Vector3dVector(np.concatenate(points, axis=0))
+         scan_origins.append(transformation[0:3, 3])
 
 
+    # point_cloud = open3d.geometry.PointCloud()
+    # point_cloud.points = open3d.utility.Vector3dVector(np.concatenate(points, axis=0))
 
-    main_component_mask = filter_by_connected_components(point_cloud, scan_origins)
+
+
+    #main_component_mask = filter_by_connected_components(point_cloud, scan_origins)
 
     # print(f"Main component has {np.count_nonzero(main_component_mask)} points")
+    np_point_cloud = np.load(merged_pointCloud)
+    coords = np_point_cloud[:,0:3]
 
-    coords = np.concatenate(points, axis=0)[main_component_mask, ...]
-    point_cloud_filered = open3d.geometry.PointCloud()
-    point_cloud_filered.points = open3d.utility.Vector3dVector(coords)
-    np_point_cloud = np.asarray(point_cloud_filered.points)
+    print(np.shape(coords), np.shape(intensities), np.shape(normals), np.shape(scan_origins))
 
-    homogeneous_point_cloud = make_homogeneous(np_point_cloud)
+
+    # coords = np.concatenate(points, axis=0)[main_component_mask, ...]
+    # point_cloud_filered = open3d.geometry.PointCloud()
+    # point_cloud_filered.points = open3d.utility.Vector3dVector(coords)
+    # np_point_cloud = np.asarray(point_cloud_filered.points)
+
+
+    homogeneous_point_cloud = make_homogeneous(coords)
     projected_point_cloud = np.matmul(homogeneous_point_cloud, projection_matrix.transpose())
     uv = projected_point_cloud[:, 0:2]
     uv = np.asarray(np.matmul(uv, np.asarray(((width, 0), (0, height)))), dtype='uint32')
@@ -459,8 +485,10 @@ def load_files(filenames, transformations, voxel_size, projection_matrix, canvas
     # point_cloud_cliped.colors =  open3d.utility.Vector3dVector(colors)
     # open3d.visualization.draw_geometries([point_cloud_cliped])
 
-    intensities = np.expand_dims(2.0 * np.concatenate(intensities, axis=0) - 1.0, axis=1)[main_component_mask, ...][valid_uv_indices]
-    normals = np.concatenate(normals, axis=0)[main_component_mask, ...][valid_uv_indices]
+    #intensities = np.expand_dims(2.0 * np.concatenate(intensities, axis=0) - 1.0, axis=1)[main_component_mask, ...][valid_uv_indices]
+    #normals = np.concatenate(normals, axis=0)[main_component_mask, ...][valid_uv_indices]
+    intensities = np.expand_dims(2.0 * np_point_cloud[:, 3] - 1, axis=1)[valid_uv_indices]
+    normals = np_point_cloud[:, 4:7][valid_uv_indices]
     min_distances = np.expand_dims(min_distances_from_scan_locations(coords, scan_origins), axis=1)
 
     features = np.concatenate([intensities, normals, min_distances], axis=1)
@@ -470,9 +498,9 @@ def load_files(filenames, transformations, voxel_size, projection_matrix, canvas
 
     return quantized_coords[indices], features[indices], ptCld_labels[indices], np.min(coords, axis=0), np.max(coords, axis=0)
 
-def generate_input_sparse_tensor(filenames, transformations, voxel_size, projection_matrix, canvas,width, height):
+def generate_input_sparse_tensor(filenames, transformations, voxel_size, projection_matrix, canvas,width, height, merged_pointCloud):
     # Create a batch, this process is done in a data loader during training in parallel.
-    quantized_coords, corresponding_features, ptCld_labels,  min_coords, max_coords = load_files(filenames, transformations, voxel_size, projection_matrix, canvas,width, height)
+    quantized_coords, corresponding_features, ptCld_labels,  min_coords, max_coords = load_files(filenames, transformations, voxel_size, projection_matrix, canvas,width, height, merged_pointCloud)
     batch = [(quantized_coords, corresponding_features)]
     coordinates_, features_ = list(zip(*batch))
     coordinates, features = ME.utils.sparse_collate(coordinates_, features_)
